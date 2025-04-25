@@ -5,16 +5,16 @@ package main
 import (
 	"bufio"
 	"context"
+	"log"
 	"path/filepath"
 	"strings"
 
-	// Add this:
 	"encoding/json"
 	"fmt"
 	"os"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	// Add this:
+	"github.com/atselvan/ankiconnect"
 	"github.com/invopop/jsonschema"
 )
 
@@ -29,7 +29,7 @@ func main() {
 		return scanner.Text(), true
 	}
 
-	tools := []ToolDefinition{ReadFileDefinition, ListFilesDefinition}
+	tools := []ToolDefinition{ReadFileDefinition, ListFilesDefinition, AddFlashcardDefinition}
 	agent := NewAgent(&client, getUserMessage, tools)
 	err := agent.Run(context.TODO())
 	if err != nil {
@@ -140,12 +140,14 @@ func (a *Agent) runInference(ctx context.Context, conversation []anthropic.Messa
 			},
 		})
 	}
-
 	message, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.ModelClaude3_5HaikuLatest,
 		MaxTokens: int64(1024),
 		Messages:  conversation,
 		Tools:     anthropicTools,
+		System: []anthropic.TextBlockParam{
+			{Text: "Talk like a wise chinese man"},
+		},
 	})
 	return message, err
 }
@@ -158,18 +160,18 @@ var ReadFileDefinition = ToolDefinition{
 	Function:    ReadFile,
 }
 
+type ReadFileInput struct {
+	Path string `json:"path" jsonschema_description:"The relative path of a file in the working directory."`
+}
+
+var ReadFileInputSchema = GenerateSchema[ReadFileInput]()
+
 var ListFilesDefinition = ToolDefinition{
 	Name:        "list_files",
 	Description: "List the files in the current directory. Use it to know what's inside a directory",
 	InputSchema: ListFilesInputSchema,
 	Function:    ListFiles,
 }
-
-type ReadFileInput struct {
-	Path string `json:"path" jsonschema_description:"The relative path of a file in the working directory."`
-}
-
-var ReadFileInputSchema = GenerateSchema[ReadFileInput]()
 
 func ListFiles(input json.RawMessage) (string, error) {
 	listFilesInput := ListFilesInput{}
@@ -224,3 +226,56 @@ func GenerateSchema[T any]() anthropic.ToolInputSchemaParam {
 		Properties: schema.Properties,
 	}
 }
+
+type Anki struct {
+	client *ankiconnect.Client
+}
+
+func NewAnki() *Anki {
+	return &Anki{
+		client: ankiconnect.NewClient(),
+	}
+}
+
+var AddFlashcardDefinition = ToolDefinition{
+	Name:        "add_flashcard",
+	Description: "Add a flashcard to Anki. Front and back",
+	InputSchema: AddFlashcardInputSchema,
+	Function:    AddFlashcard,
+}
+
+func AddFlashcard(input json.RawMessage) (string, error) {
+	addFlashcardInput := AddFlashcardInput{}
+	err := json.Unmarshal(input, &addFlashcardInput)
+	if err != nil {
+		panic(err)
+	}
+	anki := NewAnki()
+	restErr := anki.client.Ping()
+	if restErr != nil {
+		fmt.Println("unable to reach anki. make sure it's running")
+		log.Fatal(restErr)
+	}
+
+	note := ankiconnect.Note{
+		DeckName:  "New Deck",
+		ModelName: "Basic",
+		Fields: ankiconnect.Fields{
+			"Front": addFlashcardInput.Front,
+			"Back":  addFlashcardInput.Back,
+		},
+	}
+	restErr = anki.client.Notes.Add(note)
+	if restErr != nil {
+		fmt.Println("unable to add note to anki. make sure it's running")
+		log.Fatal(restErr)
+	}
+	return "Flashcard added successfully", nil
+}
+
+type AddFlashcardInput struct {
+	Front string `json:"front" jsonschema_description:"The front of the flashcard"`
+	Back  string `json:"back" jsonschema_description:"The back of the flashcard"`
+}
+
+var AddFlashcardInputSchema = GenerateSchema[AddFlashcardInput]()
