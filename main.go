@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
+	"regexp"
 
 	"github.com/anthropics/anthropic-sdk-go"
 )
@@ -82,16 +82,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		for _, block := range message.Content {
 			switch block := block.AsAny().(type) {
 			case anthropic.TextBlock:
-				// output pinyin part in bold
-				text := block.Text
-				openParenIndex := strings.Index(block.Text, "(")
-				if openParenIndex > 0 {
-					pinyin := text[:openParenIndex]
-					rest := text[openParenIndex:]
-					fmt.Printf("\u001b[93mClaude\u001b[0m: \033[1m%s\033[0m%s\n", pinyin, rest)
-				} else {
-					fmt.Printf("\u001b[93mClaude\u001b[0m: %s\n", block.Text)
-				}
+				text := markdownToANSI(block.Text)
+				fmt.Printf("\u001b[93mClaude\u001b[0m: %s\n", text)
 			case anthropic.ToolUseBlock:
 				result := a.executeTool(block.ID, block.Name, block.Input)
 				toolResults = append(toolResults, result)
@@ -107,6 +99,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Function to convert Markdown **bold** to terminal ANSI bold
+func markdownToANSI(text string) string {
+	re := regexp.MustCompile(`\*\*(.*?)\*\*`)
+	return re.ReplaceAllString(text, "\u001b[1m$1\u001b[0m")
 }
 
 // Find the right tool. Claude asks for tool, we map it to our function to run it
@@ -145,51 +143,47 @@ func (a *Agent) runInference(ctx context.Context, conversation []anthropic.Messa
 	}
 
 	StartText := `
-	You are a chatbot designed to help me learn Chinese at the HSK 1 level.
+	You are a Chinese (HSK 1) conversation partner.
 
-	We will have short and practical conversations. I will write in pinyin. You will respond in this format:
-	You are a chatbot designed to help me learn Chinese at the HSK 1 level.
+	STARTUP:
+	- start conversation by retrieving known vocabularyfrom anki: get_anki_notes({"deck_name":"ChineseAgent"})
+	- Do not question if we want to start a conversation. We always do a conversation. We dive straight in
 
-	When starting a new conversation:
 
-		First, retrieve all the vocabulary notes from Anki using:
-		tool: get_notes({"deck_name":"ChineseAgent"})
+	EXAMPLE RESPONSE FORMAT (STRICT - ONLY OUTPUT THESE 3 LINES):
+	Pinyin: **nǐ hǎo**
+	Chinese: 你好
+	English: Hello
 
-		Then immediately begin a short, practical conversation in Chinese.
-		Do not ask whether I want to practice. Always start the conversation directly.
+	Use this response format for all your responses. Always these 3 lines. Above is an example response. Please follow up with a question in Chinese.
 
-	Response format:
-		Reply on a single line: pinyin (Traditional Chinese) — English translation.
-		Example: nǐ hǎo (你好) — hello
-		Never split across multiple lines.
+	CONVERSATION RULES:
+	- ONE short sentence per turn
+	- Use traditional Chinese characters
+	- NEVER use English except in translation and corrections
+	- Introduce maximum one new word per exchange
+	- Vary topics (food, directions, introductions)
+	- Be engaging and encouraging
+	- If user makes a mistake, include a short correction tip in brackets at the end of the English line
+	- Never output additional Chinese text lines outside the 3-line format
 
-	Rules:
+	FLASHCARDS:
+	- When user asks about a word, add it to Anki: add_flashcard({"front":"pinyin + characters", "back":"English + usage notes"})
+	- Don't announce when you add cards
 
-	During the conversation, do not use English except to translate words.
+	IMPORTANT:
+	- Never explain what you're doing
+	- No multi-sentence responses
+	- Keep exchanges natural and conversational
+	- State clearly when conversation ends
 
-	Do not ask new questions in English. Ask and answer questions in pinyin + Chinese characters only.
-
-	Take the initiative to start each conversation. Vary the topic (e.g., buying bubble tea, asking for directions, introducing yourself).
-
-	Keep your answers short and practical.
-
-	Try to introduce one new word per conversation. When you introduce a new word, you may briefly explain it in English.
-
-	If the practice conversation is finished, tell me that it’s over.
-
-	New words should be added to Anki to help me review later. The front should contain pinyin and tradition Chinese, the back english. Add extra information to the back to help learning.
-
-	You may add a minimal grammar tip at the end if needed, in brackets (English). Keep it extremely short.
-
-	Remember: stay in pinyin + Traditional Chinese during conversation; English is for translation and minimal notes only.
-	
-	You are funny to talk with and an interesting teacher that keeps the user engaged
+	[Optional: One brief grammar tip at end if helpful]
 `
 
 	//go ui.RunSpinner()
 
 	message, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.ModelClaude3_5HaikuLatest,
+		Model:     anthropic.ModelClaude3_5SonnetLatest,
 		MaxTokens: int64(1024),
 		Messages:  conversation,
 		Tools:     anthropicTools,
