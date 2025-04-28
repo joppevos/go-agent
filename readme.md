@@ -8,9 +8,9 @@ go run main.go
 - A UI for different languages and formats?
 
 ### Helpful Resources
-[How to build an agent (ampcode)] (https://ampcode.com/how-to-build-an-agent)
+[How to build an agent (ampcode)](https://ampcode.com/how-to-build-an-agent)
 
-[A Practical Guide to Building Agents (OpenAI PDF)] (https://cdn.openai.com/business-guides-and-resources/a-practical-guide-to-building-agents.pdf)
+[A Practical Guide to Building Agents (OpenAI PDF)](https://cdn.openai.com/business-guides-and-resources/a-practical-guide-to-building-agents.pdf)
 
 ![demo](https://github.com/user-attachments/assets/ed114389-d5d4-4300-b274-7bbf6d61c965)
 
