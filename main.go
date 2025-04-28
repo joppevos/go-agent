@@ -3,19 +3,15 @@
 package main
 
 import (
+	"agent/tools"
 	"bufio"
 	"context"
-	"log"
-	"path/filepath"
-	"strings"
-
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/atselvan/ankiconnect"
-	"github.com/invopop/jsonschema"
 )
 
 func main() {
@@ -29,7 +25,12 @@ func main() {
 		return scanner.Text(), true
 	}
 
-	tools := []ToolDefinition{ReadFileDefinition, ListFilesDefinition, AddFlashcardDefinition}
+	tools := []tools.ToolDefinition{
+		tools.ReadFileDefinition,
+		tools.ListFilesDefinition,
+		tools.AddFlashcardDefinition,
+		tools.GetNotesDefinition,
+	}
 	agent := NewAgent(&client, getUserMessage, tools)
 	err := agent.Run(context.TODO())
 	if err != nil {
@@ -40,7 +41,7 @@ func main() {
 func NewAgent(
 	client *anthropic.Client,
 	getUserMessage func() (string, bool),
-	tools []ToolDefinition) *Agent {
+	tools []tools.ToolDefinition) *Agent {
 	return &Agent{
 		client:         client,
 		getUserMessage: getUserMessage,
@@ -51,20 +52,13 @@ func NewAgent(
 type Agent struct {
 	client         *anthropic.Client
 	getUserMessage func() (string, bool)
-	tools          []ToolDefinition
-}
-
-type ToolDefinition struct {
-	Name        string                         `json:"name"`
-	Description string                         `json:"description"`
-	InputSchema anthropic.ToolInputSchemaParam `json:"input_schema"`
-	Function    func(input json.RawMessage) (string, error)
+	tools          []tools.ToolDefinition
 }
 
 func (a *Agent) Run(ctx context.Context) error {
 	conversation := []anthropic.MessageParam{}
 
-	fmt.Println("Chat with Claude (use 'ctrl-c' to quit)")
+	//fmt.Println("(use 'ctrl-c' to quit)")
 
 	readUserInput := true
 	for {
@@ -88,7 +82,16 @@ func (a *Agent) Run(ctx context.Context) error {
 		for _, block := range message.Content {
 			switch block := block.AsAny().(type) {
 			case anthropic.TextBlock:
-				fmt.Printf("\u001b[93mClaude\u001b[0m: %s\n", block.Text)
+				// output pinyin part in bold
+				text := block.Text
+				openParenIndex := strings.Index(block.Text, "(")
+				if openParenIndex > 0 {
+					pinyin := text[:openParenIndex]
+					rest := text[openParenIndex:]
+					fmt.Printf("\u001b[93mClaude\u001b[0m: \033[1m%s\033[0m%s\n", pinyin, rest)
+				} else {
+					fmt.Printf("\u001b[93mClaude\u001b[0m: %s\n", block.Text)
+				}
 			case anthropic.ToolUseBlock:
 				result := a.executeTool(block.ID, block.Name, block.Input)
 				toolResults = append(toolResults, result)
@@ -108,7 +111,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 // Find the right tool. Claude asks for tool, we map it to our function to run it
 func (a *Agent) executeTool(id, name string, input json.RawMessage) anthropic.ContentBlockParamUnion {
-	var toolDef ToolDefinition
+	var toolDef tools.ToolDefinition
 	var found bool
 	for _, tool := range a.tools {
 		if tool.Name == name {
@@ -140,142 +143,59 @@ func (a *Agent) runInference(ctx context.Context, conversation []anthropic.Messa
 			},
 		})
 	}
+
+	StartText := `
+	You are a chatbot designed to help me learn Chinese at the HSK 1 level.
+
+	We will have short and practical conversations. I will write in pinyin. You will respond in this format:
+	You are a chatbot designed to help me learn Chinese at the HSK 1 level.
+
+	When starting a new conversation:
+
+		First, retrieve all the vocabulary notes from Anki using:
+		tool: get_notes({"deck_name":"ChineseAgent"})
+
+		Then immediately begin a short, practical conversation in Chinese.
+		Do not ask whether I want to practice. Always start the conversation directly.
+
+	Response format:
+		Reply on a single line: pinyin (Traditional Chinese) — English translation.
+		Example: nǐ hǎo (你好) — hello
+		Never split across multiple lines.
+
+	Rules:
+
+	During the conversation, do not use English except to translate words.
+
+	Do not ask new questions in English. Ask and answer questions in pinyin + Chinese characters only.
+
+	Take the initiative to start each conversation. Vary the topic (e.g., buying bubble tea, asking for directions, introducing yourself).
+
+	Keep your answers short and practical.
+
+	Try to introduce one new word per conversation. When you introduce a new word, you may briefly explain it in English.
+
+	If the practice conversation is finished, tell me that it’s over.
+
+	New words should be added to Anki to help me review later. The front should contain pinyin and tradition Chinese, the back english. Add extra information to the back to help learning.
+
+	You may add a minimal grammar tip at the end if needed, in brackets (English). Keep it extremely short.
+
+	Remember: stay in pinyin + Traditional Chinese during conversation; English is for translation and minimal notes only.
+	
+	You are funny to talk with and an interesting teacher that keeps the user engaged
+`
+
+	//go ui.RunSpinner()
+
 	message, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.ModelClaude3_5HaikuLatest,
 		MaxTokens: int64(1024),
 		Messages:  conversation,
 		Tools:     anthropicTools,
 		System: []anthropic.TextBlockParam{
-			{Text: "Talk like a wise chinese man"},
+			{Text: StartText},
 		},
 	})
 	return message, err
 }
-
-// Defintion of the read filea. Input schema is the values the tool accept, Function is the function that will be executed
-var ReadFileDefinition = ToolDefinition{
-	Name:        "read_file",
-	Description: "Read the contents of a given relative file path. Use this when you want to see what's inside a file. Do not use this with directory names.",
-	InputSchema: ReadFileInputSchema,
-	Function:    ReadFile,
-}
-
-type ReadFileInput struct {
-	Path string `json:"path" jsonschema_description:"The relative path of a file in the working directory."`
-}
-
-var ReadFileInputSchema = GenerateSchema[ReadFileInput]()
-
-var ListFilesDefinition = ToolDefinition{
-	Name:        "list_files",
-	Description: "List the files in the current directory. Use it to know what's inside a directory",
-	InputSchema: ListFilesInputSchema,
-	Function:    ListFiles,
-}
-
-func ListFiles(input json.RawMessage) (string, error) {
-	listFilesInput := ListFilesInput{}
-	err := json.Unmarshal(input, &listFilesInput)
-	if err != nil {
-		panic(err)
-	}
-	var files []string
-	filepath.WalkDir(listFilesInput.Directory, func(path string, info os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			files = append(files, path)
-		}
-		return nil
-	})
-
-	return strings.Join(files, "\n"), nil
-}
-
-type ListFilesInput struct {
-	Directory string `json:"directory" jsonschema_description:"The directory path"`
-}
-
-var ListFilesInputSchema = GenerateSchema[ListFilesInput]()
-
-func ReadFile(input json.RawMessage) (string, error) {
-	readFileInput := ReadFileInput{}
-	err := json.Unmarshal(input, &readFileInput)
-	if err != nil {
-		panic(err)
-	}
-
-	content, err := os.ReadFile(readFileInput.Path)
-	if err != nil {
-		return "", err
-	}
-	return string(content), nil
-}
-
-func GenerateSchema[T any]() anthropic.ToolInputSchemaParam {
-	reflector := jsonschema.Reflector{
-		AllowAdditionalProperties: false,
-		DoNotReference:            true,
-	}
-	var v T
-
-	schema := reflector.Reflect(v)
-
-	return anthropic.ToolInputSchemaParam{
-		Properties: schema.Properties,
-	}
-}
-
-type Anki struct {
-	client *ankiconnect.Client
-}
-
-func NewAnki() *Anki {
-	return &Anki{
-		client: ankiconnect.NewClient(),
-	}
-}
-
-var AddFlashcardDefinition = ToolDefinition{
-	Name:        "add_flashcard",
-	Description: "Add a flashcard to Anki. Front and back",
-	InputSchema: AddFlashcardInputSchema,
-	Function:    AddFlashcard,
-}
-
-func AddFlashcard(input json.RawMessage) (string, error) {
-	addFlashcardInput := AddFlashcardInput{}
-	err := json.Unmarshal(input, &addFlashcardInput)
-	if err != nil {
-		panic(err)
-	}
-	anki := NewAnki()
-	restErr := anki.client.Ping()
-	if restErr != nil {
-		fmt.Println("unable to reach anki. make sure it's running")
-		log.Fatal(restErr)
-	}
-
-	note := ankiconnect.Note{
-		DeckName:  "New Deck",
-		ModelName: "Basic",
-		Fields: ankiconnect.Fields{
-			"Front": addFlashcardInput.Front,
-			"Back":  addFlashcardInput.Back,
-		},
-	}
-	restErr = anki.client.Notes.Add(note)
-	if restErr != nil {
-		fmt.Println("unable to add note to anki. make sure it's running")
-		log.Fatal(restErr)
-	}
-	return "Flashcard added successfully", nil
-}
-
-type AddFlashcardInput struct {
-	Front string `json:"front" jsonschema_description:"The front of the flashcard"`
-	Back  string `json:"back" jsonschema_description:"The back of the flashcard"`
-}
-
-var AddFlashcardInputSchema = GenerateSchema[AddFlashcardInput]()
